@@ -1,56 +1,58 @@
 import asyncio
 import json
-import os
-import aiofiles
-from PySide6.QtCore import QThread, Signal
 import websockets
+from PySide6.QtCore import QThread, Signal
 
-WS_URL = ""
 
 class WebsocketTask(QThread):
     prepare_done = Signal(str)
+    parameter_data = Signal(dict)
+    error_occurred = Signal(str)
 
-    def __init__(self, port, plugin_name, plugin_developer, plugin_icon, token_path, /):
-        super().__init__()
+    def __init__(self, port, plugin_name, plugin_developer, plugin_icon, parent=None):
+        super().__init__(parent)
         self.port = port
         self.plugin_name = plugin_name
         self.plugin_developer = plugin_developer
         self.plugin_icon = plugin_icon
-        self.token_path = token_path
         self.ws = None
         self.loop = asyncio.new_event_loop()
         asyncio.set_event_loop(self.loop)
         self.authentication_token = None
+        self.running = False
+        self.request_counter = 1
 
-    def prepare(self):
-        self.loop.run_until_complete(self.request_authentication_token())
+    def run(self):
+        """线程入口点"""
+        try:
+            self.loop.run_until_complete(self.start_listening())
+        except Exception as e:
+            print(f"监听循环出错: {e}")
+            self.error_occurred.emit(f"监听循环出错: {e}")
+        finally:
+            self.loop.close()
 
     async def initialize_websocket(self):
-        global WS_URL
-        WS_URL = f"ws://localhost:{self.port}"
-        print(f"WebSocket URL 已设置为：{WS_URL}")
+        """初始化 WebSocket 连接"""
+        ws_url = f"ws://localhost:{self.port}"
+        print(f"尝试连接 WebSocket: {ws_url}")
         try:
-            print(f"WebSocket 连接初始化到：{WS_URL}")
-            self.ws = await websockets.connect(WS_URL)
+            self.ws = await websockets.connect(ws_url, ping_interval=30)
+            print(f"WebSocket 连接成功: {ws_url}")
+            return True
         except Exception as e:
-            print(f"初始化 WebSocket 连接时出错: {e}")
-            self.prepare_done.emit(f"初始化 WebSocket 连接时出错: {e}")
+            print(f"连接 WebSocket 失败: {e}")
+            self.error_occurred.emit(f"连接 WebSocket 失败: {e}")
+            return False
 
     async def request_authentication_token(self):
+        """请求认证令牌"""
         try:
-            await self.initialize_websocket()
-            if not self.ws:
-                raise Exception("WebSocket 连接未成功初始化")
+            # 初始化 WebSocket 连接
+            if not await self.initialize_websocket():
+                return
 
-            # 如果已经获取过token，直接使用
-            if os.path.exists(self.token_path):
-                async with aiofiles.open(self.token_path, mode="r") as f_token:
-                    self.authentication_token = await f_token.read()
-                    print(f"从文件中读取到 authenticationToken: {self.authentication_token}")
-                    self.prepare_done.emit(self.authentication_token)
-                    return
-
-            # AuthenticationTokenRequest 请求
+            # 发送认证令牌请求
             request = {
                 "apiName": "VTubeStudioPublicAPI",
                 "apiVersion": "1.0",
@@ -64,33 +66,170 @@ class WebsocketTask(QThread):
             }
 
             await self.ws.send(json.dumps(request))
-            print(f"请求已发送: {request}")
+            print("已发送认证令牌请求")
 
+            # 接收响应
             response = await self.ws.recv()
             response_data = json.loads(response)
-            print(f"收到响应: {response_data}")
 
             if response_data["messageType"] == "AuthenticationTokenResponse":
                 self.authentication_token = response_data["data"]["authenticationToken"]
-                print(f"获取到 authenticationToken: {self.authentication_token}")
+                print(f"获取到认证令牌: {self.authentication_token}")
                 self.prepare_done.emit(self.authentication_token)
-
-                # 保存token到文件
-                async with aiofiles.open(self.token_path, mode="w") as f_token:
-                    await f_token.write(self.authentication_token)
-                    print(f"authenticationToken 已保存到文件: {self.token_path}")
             else:
                 error_message = response_data.get("data", {}).get("message", "未知错误")
-                self.prepare_done.emit(f"获取 authenticationToken 时出错: {error_message}")
+                self.error_occurred.emit(f"获取认证令牌失败: {error_message}")
+
+            # 关闭连接，因为后续的监听会使用新的连接
+            await self.ws.close()
+            self.ws = None
 
         except Exception as e:
-            print(f"请求 authenticationToken 时出错: {e}")
-            self.prepare_done.emit(f"请求 authenticationToken 时出错: {e}")
+            print(f"请求认证令牌时出错: {e}")
+            self.error_occurred.emit(f"请求认证令牌时出错: {e}")
+            await self.ws.close()
+            self.ws = None
+
+    async def authenticate(self):
+        """认证会话"""
+        # 确保有有效的 WebSocket 连接
+        if self.ws is None:
+            if not await self.initialize_websocket():
+                return None
+
+        # 检查连接是否已关闭
+        try:
+            # 发送一个简单的 ping 测试连接
+            await self.ws.ping()
+        except websockets.exceptions.ConnectionClosed:
+            # 连接已关闭，尝试重新连接
+            if not await self.initialize_websocket():
+                return None
+
+        auth_request = {
+            "apiName": "VTubeStudioPublicAPI",
+            "apiVersion": "1.0",
+            "requestID": f"AuthRequest_{self.request_counter}",
+            "messageType": "AuthenticationRequest",
+            "data": {
+                "pluginName": self.plugin_name,
+                "pluginDeveloper": self.plugin_developer,
+                "authenticationToken": self.authentication_token
+            }
+        }
+        self.request_counter += 1
+
+        try:
+            await self.ws.send(json.dumps(auth_request))
+            print("已发送认证请求")
+
+            response = await self.ws.recv()
+            return json.loads(response)
+        except websockets.exceptions.ConnectionClosed:
+            print("认证过程中连接已关闭")
+            return None
+
+    async def get_parameters(self):
+        """获取模型参数"""
+        param_request = {
+            "apiName": "VTubeStudioPublicAPI",
+            "apiVersion": "1.0",
+            "requestID": f"ParamRequest_{self.request_counter}",
+            "messageType": "Live2DParameterListRequest"
+        }
+        self.request_counter += 1
+
+        try:
+            await self.ws.send(json.dumps(param_request))
+
+            response = await self.ws.recv()
+            return json.loads(response)
+        except websockets.exceptions.ConnectionClosed:
+            print("获取参数过程中连接已关闭")
+            return {"messageType": "ConnectionClosed"}
+
+    async def start_listening(self):
+        """开始循环获取参数"""
+        self.running = True
+
+        # 请求认证令牌
+        await self.request_authentication_token()
+
+        # 确保有有效的 WebSocket 连接
+        if self.ws is None:
+            if not await self.initialize_websocket():
+                self.error_occurred.emit("无法建立 WebSocket 连接")
+                return
+
+        # 认证会话
+        auth_response = await self.authenticate()
+        if auth_response is None:
+            self.error_occurred.emit("认证失败: 连接问题")
+            return
+
+        if auth_response.get("messageType") != "AuthenticationResponse":
+            error_msg = auth_response.get("data", {}).get("message", "认证失败")
+            self.error_occurred.emit(f"认证失败: {error_msg}")
+            return
+
+        print("认证成功，开始监听模型参数...")
+
+        try:
+            while True:
+                if self.running:
+                    try:
+                        # 获取参数
+                        response = await self.get_parameters()
+
+                        if response is None:
+                            # 重新连接
+                            if not await self.initialize_websocket():
+                                self.error_occurred.emit("连接已关闭且无法重新连接")
+                                break
+
+                            # 重新认证
+                            auth_response = await self.authenticate()
+                            if not auth_response or auth_response.get("messageType") != "AuthenticationResponse":
+                                self.error_occurred.emit("重新认证失败")
+                                break
+                            continue
+
+                        # 处理响应
+                        if response["messageType"] == "Live2DParameterListResponse":
+                            self.parameter_data.emit(response["data"])
+                        elif response["messageType"] == "APIError":
+                            error_id = response["data"]["errorID"]
+                            if error_id == 11:  # ModelNotLoaded错误
+                                self.error_occurred.emit("当前没有加载模型！请加载模型后再试。")
+                            else:
+                                error_msg = response["data"]["message"]
+                                self.error_occurred.emit(f"API错误: {error_msg}")
+                        elif response["messageType"] == "ConnectionClosed":
+                            # 重新连接
+                            if not await self.initialize_websocket():
+                                self.error_occurred.emit("连接已关闭且无法重新连接")
+                                break
+
+                            # 重新认证
+                            auth_response = await self.authenticate()
+                            if not auth_response or auth_response.get("messageType") != "AuthenticationResponse":
+                                self.error_occurred.emit("重新认证失败")
+                                break
+
+                        # 等待0.1秒后继续
+                        await asyncio.sleep(0.05)
+
+                    except Exception as e:
+                        print(f"获取参数时出错: {e}")
+                        self.error_occurred.emit(f"获取参数时出错: {str(e)}")
+                        await asyncio.sleep(1)  # 出错后等待1秒再重试
         finally:
+            # 停止时关闭连接
             if self.ws:
                 await self.ws.close()
-                print("WebSocket 连接已关闭")
+                self.ws = None
+            print("监听已停止")
 
-    def run(self):
-        self.loop.run_until_complete(self.request_authentication_token())
-        self.loop.close()
+    def stop_listening(self):
+        """停止监听循环"""
+        self.running = False

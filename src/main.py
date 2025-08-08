@@ -39,7 +39,7 @@ class MainWindow(QWidget):
 
                 QPushButton:disabled {
                     background-color: #2D2D2D;
-                    border: 1px solid red; /* 禁用时的红色边框 */
+                    border: 1px solid red;
                     color: #808080;
                     cursor: not-allowed;
                 }
@@ -50,15 +50,20 @@ class MainWindow(QWidget):
         self.main_layout.addWidget(self.sidebar)
         self.main_layout.setAlignment(Qt.AlignmentFlag.AlignLeft)
         self.setLayout(self.main_layout)
-        
-        
+
     def window_center(self):
         screen_size = QScreen.availableGeometry(QApplication.primaryScreen())
         x = (screen_size.width() - self.width()) / 2
         y = (screen_size.height() - self.height()) / 2 - 40
         self.move(int(x), int(y))
-        
-    
+
+    def closeEvent(self, event):
+        """窗口关闭时停止监听"""
+        if hasattr(self.sidebar, 'wt') and self.sidebar.wt:
+            self.sidebar.wt.stop_listening()
+        event.accept()
+
+
 def main():
     app = QApplication(sys.argv)
     window = MainWindow()
