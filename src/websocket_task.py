@@ -33,7 +33,6 @@ class WebsocketTask(QThread):
             self.loop.close()
 
     async def initialize_websocket(self):
-        """初始化 WebSocket 连接"""
         ws_url = f"ws://localhost:{self.port}"
         print(f"尝试连接 WebSocket: {ws_url}")
         try:
@@ -48,11 +47,9 @@ class WebsocketTask(QThread):
     async def request_authentication_token(self):
         """请求认证令牌"""
         try:
-            # 初始化 WebSocket 连接
             if not await self.initialize_websocket():
                 return
 
-            # 发送认证令牌请求
             request = {
                 "apiName": "VTubeStudioPublicAPI",
                 "apiVersion": "1.0",
@@ -68,7 +65,6 @@ class WebsocketTask(QThread):
             await self.ws.send(json.dumps(request))
             print("已发送认证令牌请求")
 
-            # 接收响应
             response = await self.ws.recv()
             response_data = json.loads(response)
 
@@ -130,7 +126,6 @@ class WebsocketTask(QThread):
             return None
 
     async def get_parameters(self):
-        """获取模型参数"""
         param_request = {
             "apiName": "VTubeStudioPublicAPI",
             "apiVersion": "1.0",
@@ -149,13 +144,10 @@ class WebsocketTask(QThread):
             return {"messageType": "ConnectionClosed"}
 
     async def start_listening(self):
-        """开始循环获取参数"""
         self.running = True
 
-        # 请求认证令牌
         await self.request_authentication_token()
 
-        # 确保有有效的 WebSocket 连接
         if self.ws is None:
             if not await self.initialize_websocket():
                 self.error_occurred.emit("无法建立 WebSocket 连接")
@@ -216,7 +208,7 @@ class WebsocketTask(QThread):
                                 self.error_occurred.emit("重新认证失败")
                                 break
 
-                        # 等待0.1秒后继续
+                        # 每秒20次请求（理论上是这样的，实际我也不清楚能不能刚好20次）
                         await asyncio.sleep(0.05)
 
                     except Exception as e:
@@ -224,12 +216,11 @@ class WebsocketTask(QThread):
                         self.error_occurred.emit(f"获取参数时出错: {str(e)}")
                         await asyncio.sleep(1)  # 出错后等待1秒再重试
         finally:
-            # 停止时关闭连接
             if self.ws:
                 await self.ws.close()
                 self.ws = None
             print("监听已停止")
 
     def stop_listening(self):
-        """停止监听循环"""
+        # 只是暂停发送请求，因为如果直接关闭循环再次开启就会很麻烦
         self.running = False

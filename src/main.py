@@ -4,8 +4,7 @@ from pathlib import Path
 from PySide6.QtCore import Qt
 from PySide6.QtGui import QIcon, QScreen
 from PySide6.QtWidgets import QApplication, QWidget, QVBoxLayout
-
-from sidebar import Sidebar
+from src.sidebar import Sidebar
 
 
 class MainWindow(QWidget):
@@ -69,7 +68,3 @@ def main():
     window = MainWindow()
     window.show()
     sys.exit(app.exec())
-
-
-if __name__ == '__main__':
-    main()
