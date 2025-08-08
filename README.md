@@ -1,2 +1,2 @@
-# Live2dParameterAcquirer
-Vtuber Studio Live2d Model Parameter Acquirer
+# Live2d Model Data Collector
+Vtuber Studio Live2d Model Data Collector
